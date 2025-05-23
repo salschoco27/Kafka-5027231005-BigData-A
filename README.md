@@ -8,17 +8,22 @@ sensor-kelembaban-gudang
 
 2. Simulasikan Data Sensor (Producer Kafka)<br>
 Buat dua Kafka producer terpisah:<br>
-a. Producer Suhu
+a. Producer Suhu<br>
 Kirim data setiap detik
+```
 Format:
-{"gudang_id": "G1", "suhu": 82}<br>
+{"gudang_id": "G1", "suhu": 82}
+```
+<br>
 b. Producer Kelembaban
 Kirim data setiap detik
+```
 Format:
 {"gudang_id": "G1", "kelembaban": 75}
+```
 Gunakan minimal 3 gudang: G1, G2, G3.
 
-3. Konsumsi dan Olah Data dengan PySpark<br>
+4. Konsumsi dan Olah Data dengan PySpark<br>
 a. Buat PySpark Consumer
 Konsumsi data dari kedua topik Kafka.<br>
 b. Lakukan Filtering:
