@@ -1,0 +1,136 @@
+# gudang_monitoring/docker-compose.yml
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.2 # Use a stable version
+    container_name: zookeeper
+    hostname: zookeeper
+    ports:
+      - "12181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.2 # Match Zookeeper version branch
+    container_name: kafka
+    hostname: kafka
+    ports:
+      - "9092:9092" # For internal Docker network communication
+      - "29092:29092" # For external access if needed (e.g., from host machine, not used by Spark in this setup)
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_LICENSE_TOPIC_REPLICATION_FACTOR: 1 # Confluent specific
+      KAFKA_CONFLUENT_BALANCER_TOPIC_REPLICATION_FACTOR: 1 # Confluent specific
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1             # For single broker
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1  # For single broker
+
+  kafka-topic-creator:
+    image: confluentinc/cp-kafka:7.3.2
+    container_name: kafka-topic-creator
+    depends_on:
+      - kafka
+    command: >
+      bash -c "
+        echo 'Waiting for Kafka to be ready...' &&
+        cub kafka-ready -b kafka:9092 1 120 &&
+        echo 'Kafka is ready!' &&
+        kafka-topics --create --if-not-exists --topic sensor-suhu-gudang --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+        kafka-topics --create --if-not-exists --topic sensor-kelembaban-gudang --bootstrap-server kafka:9092 --partitions 1 --replication-factor 1 &&
+        echo 'Topics created.' &&
+        kafka-topics --list --bootstrap-server kafka:9092
+      "
+    environment:
+      KAFKA_BROKER_ID: ignored # Not a broker
+      KAFKA_ZOOKEEPER_CONNECT: ignored # Not a broker
+
+  spark-master:
+    image: bitnami/spark:3.3 # Using Spark 3.3
+    container_name: spark-master
+    hostname: spark-master
+    ports:
+      - "8080:8080" # Spark Master Web UI
+      - "7077:7077" # Spark Master RPC
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    volumes:
+      - ./app:/app # Mount our application code
+
+  spark-worker:
+    image: bitnami/spark:3.3
+    container_name: spark-worker
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081" # Spark Worker Web UI (can be different for multiple workers)
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    volumes:
+      - ./app:/app
+
+  producer-suhu:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.producers
+    container_name: producer-suhu
+    command: python producer_suhu.py
+    depends_on:
+      - kafka-topic-creator # Ensure topics are created before producers start
+    volumes:
+      - ./app:/app
+    environment:
+      KAFKA_BROKERS: kafka:9092
+
+  producer-kelembaban:
+    build:
+      context: ./app
+      dockerfile: Dockerfile.producers
+    container_name: producer-kelembaban
+    command: python producer_kelembaban.py
+    depends_on:
+      - kafka-topic-creator
+    volumes:
+      - ./app:/app
+    environment:
+      KAFKA_BROKERS: kafka:9092
+
+  # We will submit the PySpark job manually or via spark-master service
+  # If you want a dedicated service to run the spark-submit:
+  # spark-app:
+  #   image: bitnami/spark:3.3
+  #   container_name: spark-app-submitter
+  #   depends_on:
+  #     - spark-master
+  #     - kafka-topic-creator
+  #   volumes:
+  #     - ./app:/app
+  #   command: >
+  #     bash -c "
+  #       echo 'Waiting for Spark Master...' &&
+  #       /opt/bitnami/spark/bin/spark-submit \
+  #         --master spark://spark-master:7077 \
+  #         --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.4 \
+  #         /app/pyspark_consumer.py
+  #     "
+  #   environment:
+  #     KAFKA_BROKERS: kafka:9092
+  #     SPARK_MASTER_URL: spark://spark-master:7077

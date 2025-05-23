@@ -1,0 +1,2 @@
+# gudang_monitoring/app/requirements_producers.txt
+kafka-python
